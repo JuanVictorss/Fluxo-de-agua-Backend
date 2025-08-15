@@ -118,7 +118,7 @@ O backend envia eventos via **Socket.IO** para o frontend:
 ## 🔗 Repositórios Relacionados
 
 - [📂 Frontend](https://github.com/JuanVictorss/Fluxo-de-agua-Frontend)
-- [📂 Firmware ESP32](www.aaa.com)
+- [📂 Firmware ESP32](https://github.com/JuanVictorss/Fluxo-de-agua-ESP32-Firmware.git)
 
 ---
 
@@ -126,5 +126,6 @@ O backend envia eventos via **Socket.IO** para o frontend:
 
 **Juan Victor Souza Silva**.
 Projeto para fins acadêmicos na disciplina de **Sistemas Embarcados**.
+
 
 
