@@ -7,6 +7,8 @@
 ![SQLite](https://img.shields.io/badge/SQLite-3-blue?logo=sqlite)
 
 ---
+## [Aplicação Online](https://fluxo-de-agua-frontend.vercel.app/)
+---
 
 ## 📜 Visão Geral
 
@@ -126,6 +128,7 @@ O backend envia eventos via **Socket.IO** para o frontend:
 
 **Juan Victor Souza Silva**.
 Projeto para fins acadêmicos na disciplina de **Sistemas Embarcados**.
+
 
 
 
