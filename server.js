@@ -14,13 +14,15 @@ const PORTA = 3001;
 const urlBroker = 'mqtt://broker.hivemq.com:1883';
 
 // topicos mqtt
-const dispositivoId = 'esp32-juanvictor'; // 
+const dispositivoId = 'esp32-juanvictor';
 const topicoDados = `ifpe/ads/dispositivo/${dispositivoId}/dados`;
 const topicoStatus = `ifpe/ads/dispositivo/${dispositivoId}/status`;
 const topicoConfigSet = `ifpe/ads/dispositivo/${dispositivoId}/config/set`;
+const topicoConfigGet = `ifpe/ads/dispositivo/${dispositivoId}/config/get`; // NOVO
 
 // armazenar segundos
 let leiturasDoMinuto = [];
+let configAtualCache = { fator_calibracao: 7.5, intervalo_telemetria_s: 1 }; // NOVO
 
 //MQTT
 const client = mqtt.connect(urlBroker);
@@ -28,6 +30,7 @@ client.on('connect', () => {
     console.log('>>> Conectado ao broker HiveMQ! <<<');
     client.subscribe(topicoDados);
     client.subscribe(topicoStatus);
+    client.subscribe(topicoConfigGet); // NOVO
 });
 
 // mensagens
@@ -51,31 +54,29 @@ client.on('message', (topic, message) => {
             }
         } catch (e) { console.warn("[STATUS] Mensagem de status inválida recebida."); }
     }
+    
+    // configurações do esp32 config/get
+    if (topic === topicoConfigGet) {
+        try {
+            configAtualCache = JSON.parse(dataStr);
+            console.log(`[CONFIG] Configuração do ESP32 atualizada no cache:`, configAtualCache);
+        } catch (e) { console.warn("[CONFIG] Mensagem de config inválida recebida."); }
+    }
 });
 
 setInterval(async () => {
     if (leiturasDoMinuto.length === 0) return;
-
     const leituras = [...leiturasDoMinuto]; 
     leiturasDoMinuto = []; 
-
     const somaVazao = leituras.reduce((acc, val) => acc + val, 0);
     const vazaoMedia = somaVazao / leituras.length;
     const vazaoMaxima = Math.max(...leituras);
     const volumeNoMinuto = (somaVazao / 60);
-
-    const registroAgregado = {
-        vazao_media_lpm: vazaoMedia,
-        vazao_maxima_lpm: vazaoMaxima,
-        volume_no_minuto: volumeNoMinuto,
-    };
-
+    const registroAgregado = { vazao_media_lpm: vazaoMedia, vazao_maxima_lpm: vazaoMaxima, volume_no_minuto: volumeNoMinuto };
     try {
         await knex('leituras_minuto').insert(registroAgregado);
         console.log('[AGREGADOR] Dados do último minuto salvos:', registroAgregado);
-    } catch (error) {
-        console.error('[AGREGADOR] Erro ao salvar dados agregados:', error);
-    }
+    } catch (error) { console.error('[AGREGADOR] Erro ao salvar dados agregados:', error); }
 }, 60 * 1000); 
 
 // buscar historico
@@ -102,6 +103,12 @@ app.post('/api/config/set', (req, res) => {
         res.status(500).json({ status: 'falha', erro: error.message });
     }
 });
+
+//frontend busca a configuração atual
+app.get('/api/config/get', (req, res) => {
+    res.json(configAtualCache);
+});
+
 
 async function iniciarServidor() {
     await configurarBancoDeDados();
