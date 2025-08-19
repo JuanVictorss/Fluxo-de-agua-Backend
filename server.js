@@ -1,106 +1,111 @@
-const express = require("express");
-const http = require("http");
+const express = require('express');
+const http = require('http');
 const { Server } = require("socket.io");
-const mqtt = require("mqtt");
-const cors = require("cors");
-const { knex, configurarBancoDeDados } = require("./database");
+const mqtt = require('mqtt');
+const cors = require('cors');
+const { knex, configurarBancoDeDados } = require('./database');
 
 const app = express();
 app.use(cors());
+app.use(express.json()); 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 const PORTA = 3001;
-const urlBroker = "mqtt://broker.hivemq.com:1883";
-const topico = "ifpe/ads/esp32/fluxoagua";
-const LIMITE_LOGS = 10;
-let sessaoAtual = null;
+const urlBroker = 'mqtt://broker.hivemq.com:1883';
 
-async function salvarSessao(sessao) {
-  try {
-    await knex("logs").insert(sessao);
-    console.log(`[BANCO DE DADOS] Sessão de fluxo salva com sucesso.`);
+// topicos mqtt
+const dispositivoId = 'esp32-juanvictor'; // 
+const topicoDados = `ifpe/ads/dispositivo/${dispositivoId}/dados`;
+const topicoStatus = `ifpe/ads/dispositivo/${dispositivoId}/status`;
+const topicoConfigSet = `ifpe/ads/dispositivo/${dispositivoId}/config/set`;
 
-    io.emit("historico-atualizado");
+// armazenar segundos
+let leiturasDoMinuto = [];
 
-    const { count } = await knex("logs").count("id as count").first();
-    if (count > LIMITE_LOGS) {
-      const logMaisAntigo = await knex("logs").orderBy("id", "asc").first("id");
-      await knex("logs").where("id", logMaisAntigo.id).del();
-      console.log(
-        `[BANCO DE DADOS] Log antigo (ID: ${logMaisAntigo.id}) removido para manter o limite de ${LIMITE_LOGS}.`
-      );
-    }
-  } catch (error) {
-    console.error("[BANCO DE DADOS] Erro ao salvar a sessão:", error);
-  }
-}
-
+//MQTT
 const client = mqtt.connect(urlBroker);
-client.on("connect", () => {
-  console.log(">>> Conectado ao broker HiveMQ! <<<");
-  client.subscribe(topico, () =>
-    console.log(`Inscrito no tópico: "${topico}".`)
-  );
+client.on('connect', () => {
+    console.log('>>> Conectado ao broker HiveMQ! <<<');
+    client.subscribe(topicoDados);
+    client.subscribe(topicoStatus);
 });
 
-client.on("message", (topicoRecebido, mensagem) => {
-  const dadosRecebidos = JSON.parse(mensagem.toString());
-  const payloadParaFrontend = { ...dadosRecebidos, volume_sessao_atual: 0 };
-  const estaFluindo = dadosRecebidos.flow_rate_lpm > 0;
+// mensagens
+client.on('message', (topic, message) => {
+    const dataStr = message.toString();
 
-  if (estaFluindo && !sessaoAtual) {
-    sessaoAtual = {
-      inicio: new Date(),
-      volumeTotalInicial: dadosRecebidos.total_liters,
-      pontosGrafico: [],
-    };
-  }
+    // dados
+    if (topic === topicoDados) {
+        const data = JSON.parse(dataStr);
+        leiturasDoMinuto.push(data.flow_rate_lpm); 
+        io.emit('dados-fluxo', dataStr); 
+    }
 
-  if (estaFluindo && sessaoAtual) {
-    sessaoAtual.pontosGrafico.push({
-      time: new Date().toLocaleTimeString("pt-BR", { hour12: false }),
-      vazao: dadosRecebidos.flow_rate_lpm,
-    });
-    payloadParaFrontend.volume_sessao_atual =
-      dadosRecebidos.total_liters - sessaoAtual.volumeTotalInicial;
-  } else if (!estaFluindo && sessaoAtual) {
-    console.log(
-      "[SESSAO] Fluxo parado. Finalizando e salvando sessão imediatamente."
-    );
-    const fimSessao = new Date();
-    const duracao = Math.round((fimSessao - sessaoAtual.inicio) / 1000);
-    const volumeSessao =
-      dadosRecebidos.total_liters - sessaoAtual.volumeTotalInicial;
-    const sessaoParaSalvar = {
-      data_hora_inicio: sessaoAtual.inicio,
-      data_hora_fim: fimSessao,
-      duracao_segundos: duracao,
-      volume_litros_sessao: volumeSessao,
-      pontos_grafico_vazao: JSON.stringify(sessaoAtual.pontosGrafico),
-    };
-    salvarSessao(sessaoParaSalvar);
-    sessaoAtual = null;
-  }
-
-  io.emit("dados-fluxo", JSON.stringify(payloadParaFrontend));
+    // status
+    if (topic === topicoStatus) {
+        try {
+            const statusData = JSON.parse(dataStr);
+            if (statusData.status) {
+                console.log(`[STATUS] Status do ESP32 recebido: ${statusData.status}`);
+                io.emit('status-esp32', statusData.status); 
+            }
+        } catch (e) { console.warn("[STATUS] Mensagem de status inválida recebida."); }
+    }
 });
 
-app.get("/api/logs", async (req, res) => {
-  try {
-    const logs = await knex("logs").orderBy("id", "desc").limit(LIMITE_LOGS);
-    res.json(logs);
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao buscar dados do banco." });
-  }
+setInterval(async () => {
+    if (leiturasDoMinuto.length === 0) return;
+
+    const leituras = [...leiturasDoMinuto]; 
+    leiturasDoMinuto = []; 
+
+    const somaVazao = leituras.reduce((acc, val) => acc + val, 0);
+    const vazaoMedia = somaVazao / leituras.length;
+    const vazaoMaxima = Math.max(...leituras);
+    const volumeNoMinuto = (somaVazao / 60);
+
+    const registroAgregado = {
+        vazao_media_lpm: vazaoMedia,
+        vazao_maxima_lpm: vazaoMaxima,
+        volume_no_minuto: volumeNoMinuto,
+    };
+
+    try {
+        await knex('leituras_minuto').insert(registroAgregado);
+        console.log('[AGREGADOR] Dados do último minuto salvos:', registroAgregado);
+    } catch (error) {
+        console.error('[AGREGADOR] Erro ao salvar dados agregados:', error);
+    }
+}, 60 * 1000); 
+
+// buscar historico
+app.get('/api/historico/12h', async (req, res) => {
+    try {
+        const limite = 12 * 60;
+        const dados = await knex('leituras_minuto').orderBy('id', 'desc').limit(limite);
+        res.json(dados.reverse());
+    } catch (error) { res.status(500).json({ error: 'Erro ao buscar dados do banco.' }); }
+});
+
+// enviar dados para o esp32
+app.post('/api/config/set', (req, res) => {
+    try {
+        const configPayload = JSON.stringify(req.body);
+        client.publish(topicoConfigSet, configPayload, (err) => {
+            if (err) {
+                return res.status(500).json({ status: 'falha', erro: err.message });
+            }
+            console.log(`[API] Comando de configuração enviado: ${configPayload}`);
+            res.json({ status: 'sucesso', comando_enviado: req.body });
+        });
+    } catch (error) {
+        res.status(500).json({ status: 'falha', erro: error.message });
+    }
 });
 
 async function iniciarServidor() {
-  await configurarBancoDeDados();
-  io.on("connection", (socket) =>
-    console.log(">>> Um usuário se conectou ao WebSocket! <<<")
-  );
-  server.listen(PORTA, () =>
-    console.log(`Servidor rodando e escutando na porta ${PORTA}`)
-  );
+    await configurarBancoDeDados();
+    io.on('connection', (socket) => console.log('>>> Um usuário se conectou ao WebSocket! <<<'));
+    server.listen(PORTA, () => console.log(`Servidor rodando e escutando na porta ${PORTA}`));
 }
 iniciarServidor();
