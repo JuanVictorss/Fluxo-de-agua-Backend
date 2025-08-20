@@ -4,6 +4,7 @@ const { Server } = require("socket.io");
 const mqtt = require('mqtt');
 const cors = require('cors');
 const { knex, configurarBancoDeDados } = require('./database');
+const { type } = require('os');
 
 const app = express();
 app.use(cors());
@@ -20,7 +21,7 @@ const topicoStatus = `ifpe/ads/dispositivo/${dispositivoId}/status`;
 const topicoConfigSet = `ifpe/ads/dispositivo/${dispositivoId}/config/set`;
 const topicoConfigGet = `ifpe/ads/dispositivo/${dispositivoId}/config/get`;
 
-// MODIFICADO: Esta variável agora armazena os pontos completos {time, vazao}
+// armazena os pontos
 let pontosDaHora = [];
 let configAtualCache = { fator_calibracao: 7.5, intervalo_telemetria_s: 1 };
 
@@ -35,7 +36,7 @@ client.on('connect', () => {
 
 client.on('message', (topic, message) => {
     const dataStr = message.toString();
-
+    console.log(`[MQTT] Recebido: ${dataStr} em ${topic}`);
     if (topic === topicoDados) {
         const data = JSON.parse(dataStr);
         pontosDaHora.push({
@@ -63,31 +64,38 @@ client.on('message', (topic, message) => {
     }
 });
 
+//corrigido, agora salva um objeto json apenas
 setInterval(async () => {
     if (pontosDaHora.length === 0) {
-        console.log('[AGREGADOR] Nenhuma atividade na última hora. Nenhum log salvo.');
         return;
     }
+    
+    const pontoParaSalvar = pontosDaHora.shift();
 
-    const pontosParaSalvar = [...pontosDaHora];
-    pontosDaHora = [];
+    if (pontoParaSalvar.vazao > 0.01) {
+        try {
+            const intervalo_s = configAtualCache.intervalo_telemetria_s;
+            const vazao_lps = pontoParaSalvar.vazao / 60.0;
+            const volumeDoPonto = vazao_lps * intervalo_s;
 
-    const registroSessao = {
-        pontos_grafico_vazao: JSON.stringify(pontosParaSalvar)
-    };
+            const registroSessao = {
+                pontos_grafico_vazao: JSON.stringify(pontoParaSalvar),
+                volume_total_litros: volumeDoPonto
+            };
 
-    try {
-        await knex('sessoes').insert(registroSessao);
-        console.log(`[AGREGADOR] Sessão da última hora salva com ${pontosParaSalvar.length} pontos.`);
-    } catch (error) {
-        console.error('[AGREGADOR] Erro ao salvar sessão horária:', error);
+            await knex('sessoes').insert(registroSessao);
+            console.log(`[DB] Registro salvo: ${JSON.stringify(pontoParaSalvar)}`);
+
+        } catch (error) {
+            console.error(' Erro ao salvar registro individual:', error);
+        }
     }
-}, 60 * 60 * 1000);
+}, 1000);
 
 
 app.get('/api/historico/sessoes', async (req, res) => {
     try {
-        const sessoes = await knex('sessoes').select('id', 'timestamp_hora').orderBy('id', 'desc');
+        const sessoes = await knex('sessoes').select('id', 'timestamp_hora', 'volume_total_litros').orderBy('id', 'desc');
         res.json(sessoes);
     } catch (error) { res.status(500).json({ error: 'Erro ao buscar lista de sessões.' }); }
 });
