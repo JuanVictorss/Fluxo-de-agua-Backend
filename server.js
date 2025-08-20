@@ -79,6 +79,7 @@ setInterval(async () => {
             const volumeDoPonto = vazao_lps * intervalo_s;
 
             const registroSessao = {
+                timestamp_hora: new Date().toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' }),
                 pontos_grafico_vazao: JSON.stringify(pontoParaSalvar),
                 volume_total_litros: volumeDoPonto
             };
@@ -124,6 +125,31 @@ app.post('/api/config/set', (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ status: 'falha', erro: error.message });
+    }
+});
+
+//bloco para retornar hora em hora
+app.get('/api/historico/horario-agregado', async (req, res) => {
+    try {
+        const dadosAgregados = await knex('sessoes')
+            .select(
+                knex.raw("strftime('%Y-%m-%d %H:00', timestamp_hora) as hora_formatada"),
+                knex.raw('SUM(volume_total_litros) as volume_total_hora'),
+                knex.raw('AVG(CAST(json_extract(pontos_grafico_vazao, \'$.vazao\') AS REAL)) as vazao_media_hora')
+            )
+            .groupBy('hora_formatada')
+            .orderBy('hora_formatada', 'asc');
+
+        const resultado = dadosAgregados.map(r => ({
+            hora: r.hora_formatada,
+            volume_total_litros: parseFloat(r.volume_total_hora.toFixed(2)),
+            vazao_media_lpm: parseFloat(r.vazao_media_hora.toFixed(2))
+        }));
+
+        res.json(resultado);
+    } catch (error) {
+        console.error('Erro ao buscar dados agregados por hora:', error);
+        res.status(500).json({ error: 'Erro ao buscar dados agregados.' });
     }
 });
 
